@@ -81,11 +81,43 @@ function New-Shortcut {
     }
 }
 
-$progId = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice").ProgId
-$command = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey("$progId\shell\open\command").GetValue("")
+# Gdy skrypt dziala w kontekscie SYSTEM (np. ESET Agent), HKCU nie istnieje.
+# Odczytaj domyslna przegladarke z profilu pierwszego zalogowanego uzytkownika;
+# jesli nie uda sie — uzyj Microsoft Edge jako fallback.
+$DefaultBrowserPath = $null
 
-if ($command -match '"([^"]*)"') {
-    $DefaultBrowserPath = $matches[1]
+$userProfiles = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" |
+    Where-Object { $_.GetValue("ProfileImagePath") -match "C:\\Users\\" -and $_.GetValue("ProfileImagePath") -notmatch "systemprofile|LocalService|NetworkService" } |
+    Select-Object -ExpandProperty PSPath
+
+foreach ($profile in $userProfiles) {
+    $sid = Split-Path -Leaf $profile
+    try {
+        $hive = "HKU:\$sid\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
+        if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+            New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS | Out-Null
+        }
+        $progId = (Get-ItemProperty $hive -ErrorAction Stop).ProgId
+        $command = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey("$progId\shell\open\command").GetValue("")
+        if ($command -match '"([^"]*)"') {
+            $DefaultBrowserPath = $matches[1]
+            break
+        }
+    } catch {
+        continue
+    }
+}
+
+if (-not $DefaultBrowserPath) {
+    $edgePath = Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
+    $edgePathX86 = Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
+    if (Test-Path $edgePath) {
+        $DefaultBrowserPath = $edgePath
+    } elseif (Test-Path $edgePathX86) {
+        $DefaultBrowserPath = $edgePathX86
+    } else {
+        throw "[!] Cannot determine browser path and Edge not found."
+    }
 }
 
 $props = @{
