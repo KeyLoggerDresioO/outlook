@@ -84,48 +84,51 @@ function New-Shortcut {
 # Gdy skrypt dziala w kontekscie SYSTEM (np. ESET Agent), HKCU nie istnieje.
 # Odczytaj domyslna przegladarke z profilu pierwszego zalogowanego uzytkownika;
 # jesli nie uda sie — uzyj Microsoft Edge jako fallback.
-$DefaultBrowserPath = $null
+# Edge is always preferred — check both Program Files locations first.
+$edgePath    = Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
+$edgePathX86 = Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
 
-$userProfiles = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" |
-    Where-Object { $_.GetValue("ProfileImagePath") -match "C:\\Users\\" -and $_.GetValue("ProfileImagePath") -notmatch "systemprofile|LocalService|NetworkService" } |
-    Select-Object -ExpandProperty PSPath
+if (Test-Path $edgePath) {
+    $DefaultBrowserPath = $edgePath
+} elseif (Test-Path $edgePathX86) {
+    $DefaultBrowserPath = $edgePathX86
+} else {
+    # Edge not found — fall back to the default browser of the first logged-on user.
+    $DefaultBrowserPath = $null
 
-foreach ($profile in $userProfiles) {
-    $sid = Split-Path -Leaf $profile
-    try {
-        $hive = "HKU:\$sid\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
-        if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
-            New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS | Out-Null
+    $userProfiles = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" |
+        Where-Object { $_.GetValue("ProfileImagePath") -match "C:\\Users\\" -and $_.GetValue("ProfileImagePath") -notmatch "systemprofile|LocalService|NetworkService" } |
+        Select-Object -ExpandProperty PSPath
+
+    foreach ($profile in $userProfiles) {
+        $sid = Split-Path -Leaf $profile
+        try {
+            $hive = "HKU:\$sid\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
+            if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+                New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS | Out-Null
+            }
+            $progId = (Get-ItemProperty $hive -ErrorAction Stop).ProgId
+            $command = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey("$progId\shell\open\command").GetValue("")
+            if ($command -match '"([^"]*)"') {
+                $DefaultBrowserPath = $matches[1]
+                break
+            }
+        } catch {
+            continue
         }
-        $progId = (Get-ItemProperty $hive -ErrorAction Stop).ProgId
-        $command = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey("$progId\shell\open\command").GetValue("")
-        if ($command -match '"([^"]*)"') {
-            $DefaultBrowserPath = $matches[1]
-            break
-        }
-    } catch {
-        continue
     }
-}
 
-if (-not $DefaultBrowserPath) {
-    $edgePath = Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
-    $edgePathX86 = Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
-    if (Test-Path $edgePath) {
-        $DefaultBrowserPath = $edgePath
-    } elseif (Test-Path $edgePathX86) {
-        $DefaultBrowserPath = $edgePathX86
-    } else {
+    if (-not $DefaultBrowserPath) {
         throw "[!] Cannot determine browser path and Edge not found."
     }
 }
 
 $props = @{
-    'ShortcutPath' = Join-Path -Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) -ChildPath 'Outlook.lnk'
+    'ShortcutPath' = Join-Path -Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) -ChildPath 'Outlook (PWA).lnk'
     'TargetPath'   = $DefaultBrowserPath
-    'Arguments'    = '-profile-directory=Default -app=https://outlook.office365.com/mail/'
-    'IconName'     = "outlook.ico"
-    'IconURL'      = "https://raw.githubusercontent.com/KeyLoggerDresioO/outlook/refs/heads/main/outlook.ico"
+    'Arguments'    = '-profile-directory=Default -app=https://outlook.cloud.microsoft/mail/'
+    'IconName'     = "outlook_pwa.ico"
+    'IconURL'      = "https://raw.githubusercontent.com/KeyLoggerDresioO/outlook/refs/heads/main/outlook_pwa.ico"
     'IconPath'     = "C:\Temp"
 }
 
