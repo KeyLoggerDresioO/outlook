@@ -10,7 +10,6 @@ function wl {
     $t = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $e = "[$t] [$l] $m"
     $e | Out-File $log -Append -Encoding utf8
-    if ($l -ne 'DEBUG') { Write-Output $e }
 }
 
 $hdr = @(
@@ -29,7 +28,6 @@ $hdr = @(
 ) -join [Environment]::NewLine
 
 $hdr | Out-File $log -Encoding utf8 -Force
-Write-Output $hdr
 
 function New-Shortcut {
     [CmdletBinding()]
@@ -194,7 +192,6 @@ try {
         '================================================================================'
     ) -join [Environment]::NewLine
     $ftr | Out-File $log -Append -Encoding utf8
-    Write-Output $ftr
     Write-Output "[OK] Udalo sie stworzyc skrot do aplikacji Outlook (PWA) na pulpicie."
 }
 catch {
@@ -212,7 +209,6 @@ catch {
         '================================================================================'
     ) -join [Environment]::NewLine
     $ftr | Out-File $log -Append -Encoding utf8
-    Write-Output $ftr
     Write-Output "[!] Nie udalo sie stworzyc skrotu do aplikacji Outlook (PWA) na pulpicie. Powod: $_"
     exit 1
 }
