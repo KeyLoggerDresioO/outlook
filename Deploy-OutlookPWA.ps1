@@ -1,3 +1,36 @@
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$start = Get-Date
+$ts    = $start.ToString('yyyy-MM-dd_HH-mm')
+$log   = "$env:ProgramData\ESET\RemoteAdministrator\Agent\EraAgentApplicationData\Logs\deploy_outlook_pwa_$ts.txt"
+
+function wl {
+    param([string]$m, [string]$l = 'INFO')
+    $t = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $e = "[$t] [$l] $m"
+    $e | Out-File $log -Append -Encoding utf8
+    if ($l -ne 'DEBUG') { Write-Output $e }
+}
+
+$hdr = @(
+    '================================================================================'
+    'Script Execution Log'
+    '================================================================================'
+    "Script Name    : deploy_outlook_pwa"
+    "Log File       : $log"
+    "Start Time     : $($start.ToString('yyyy-MM-dd HH:mm:ss'))"
+    "Computer Name  : $env:COMPUTERNAME"
+    "User Context   : $env:USERNAME"
+    "OS Version     : $([System.Environment]::OSVersion.VersionString)"
+    "PowerShell Ver : $($PSVersionTable.PSVersion.ToString())"
+    '================================================================================'
+    ''
+) -join [Environment]::NewLine
+
+$hdr | Out-File $log -Encoding utf8 -Force
+Write-Output $hdr
+
 function New-Shortcut {
     [CmdletBinding()]
     Param (
@@ -81,55 +114,105 @@ function New-Shortcut {
     }
 }
 
-# Gdy skrypt dziala w kontekscie SYSTEM (np. ESET Agent), HKCU nie istnieje.
-# Odczytaj domyslna przegladarke z profilu pierwszego zalogowanego uzytkownika;
-# jesli nie uda sie — uzyj Microsoft Edge jako fallback.
-# Edge is always preferred — check both Program Files locations first.
-$edgePath    = Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
-$edgePathX86 = Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
+try {
+    # Gdy skrypt dziala w kontekscie SYSTEM (np. ESET Agent), HKCU nie istnieje.
+    # Odczytaj domyslna przegladarke z profilu pierwszego zalogowanego uzytkownika;
+    # jesli nie uda sie — uzyj Microsoft Edge jako fallback.
+    # Edge is always preferred — check both Program Files locations first.
+    $edgePath    = Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
+    $edgePathX86 = Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
 
-if (Test-Path $edgePath) {
-    $DefaultBrowserPath = $edgePath
-} elseif (Test-Path $edgePathX86) {
-    $DefaultBrowserPath = $edgePathX86
-} else {
-    # Edge not found — fall back to the default browser of the first logged-on user.
-    $DefaultBrowserPath = $null
+    wl "Checking for Microsoft Edge installation..." 'DEBUG'
 
-    $userProfiles = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" |
-        Where-Object { $_.GetValue("ProfileImagePath") -match "C:\\Users\\" -and $_.GetValue("ProfileImagePath") -notmatch "systemprofile|LocalService|NetworkService" } |
-        Select-Object -ExpandProperty PSPath
+    if (Test-Path $edgePath) {
+        $DefaultBrowserPath = $edgePath
+        wl "Edge found (x64): $edgePath"
+    } elseif (Test-Path $edgePathX86) {
+        $DefaultBrowserPath = $edgePathX86
+        wl "Edge found (x86): $edgePathX86"
+    } else {
+        # Edge not found — fall back to the default browser of the first logged-on user.
+        wl "Edge not found. Falling back to default browser from user registry hive." 'WARNING'
+        $DefaultBrowserPath = $null
 
-    foreach ($profile in $userProfiles) {
-        $sid = Split-Path -Leaf $profile
-        try {
-            $hive = "HKU:\$sid\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
-            if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
-                New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS | Out-Null
+        $userProfiles = Get-ChildItem -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" |
+            Where-Object { $_.GetValue("ProfileImagePath") -match "C:\\Users\\" -and $_.GetValue("ProfileImagePath") -notmatch "systemprofile|LocalService|NetworkService" } |
+            Select-Object -ExpandProperty PSPath
+
+        foreach ($profile in $userProfiles) {
+            $sid = Split-Path -Leaf $profile
+            try {
+                $hive = "HKU:\$sid\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice"
+                if (-not (Get-PSDrive -Name HKU -ErrorAction SilentlyContinue)) {
+                    New-PSDrive -Name HKU -PSProvider Registry -Root HKEY_USERS | Out-Null
+                }
+                $progId = (Get-ItemProperty $hive -ErrorAction Stop).ProgId
+                $command = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey("$progId\shell\open\command").GetValue("")
+                if ($command -match '"([^"]*)"') {
+                    $DefaultBrowserPath = $matches[1]
+                    wl "Default browser resolved from SID $sid : $DefaultBrowserPath"
+                    break
+                }
+            } catch {
+                wl "Could not read browser registry for SID $sid : $_" 'DEBUG'
+                continue
             }
-            $progId = (Get-ItemProperty $hive -ErrorAction Stop).ProgId
-            $command = [Microsoft.Win32.Registry]::ClassesRoot.OpenSubKey("$progId\shell\open\command").GetValue("")
-            if ($command -match '"([^"]*)"') {
-                $DefaultBrowserPath = $matches[1]
-                break
-            }
-        } catch {
-            continue
+        }
+
+        if (-not $DefaultBrowserPath) {
+            wl "Cannot determine browser path and Edge not found." 'ERROR'
+            throw "[!] Cannot determine browser path and Edge not found."
         }
     }
 
-    if (-not $DefaultBrowserPath) {
-        throw "[!] Cannot determine browser path and Edge not found."
+    $shortcutPath = Join-Path -Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) -ChildPath 'Outlook (PWA).lnk'
+    wl "Creating shortcut: $shortcutPath"
+    wl "Target browser  : $DefaultBrowserPath" 'DEBUG'
+
+    $props = @{
+        'ShortcutPath' = $shortcutPath
+        'TargetPath'   = $DefaultBrowserPath
+        'Arguments'    = '-profile-directory=Default -app=https://outlook.cloud.microsoft/mail/'
+        'IconName'     = "outlook_pwa.ico"
+        'IconURL'      = "https://raw.githubusercontent.com/KeyLoggerDresioO/outlook/refs/heads/main/outlook_pwa.ico"
+        'IconPath'     = "C:\Temp"
     }
-}
 
-$props = @{
-    'ShortcutPath' = Join-Path -Path ([Environment]::GetFolderPath("CommonDesktopDirectory")) -ChildPath 'Outlook (PWA).lnk'
-    'TargetPath'   = $DefaultBrowserPath
-    'Arguments'    = '-profile-directory=Default -app=https://outlook.cloud.microsoft/mail/'
-    'IconName'     = "outlook_pwa.ico"
-    'IconURL'      = "https://raw.githubusercontent.com/KeyLoggerDresioO/outlook/refs/heads/main/outlook_pwa.ico"
-    'IconPath'     = "C:\Temp"
-}
+    New-Shortcut @props
+    wl "Shortcut created successfully." 'SUCCESS'
 
-New-Shortcut @props
+    $end = Get-Date
+    $dur = $end - $start
+    $ftr = @(
+        ''
+        '================================================================================'
+        'Script Execution Complete'
+        '================================================================================'
+        "End Time       : $($end.ToString('yyyy-MM-dd HH:mm:ss'))"
+        "Duration       : $($dur.ToString())"
+        "Exit Status    : SUCCESS"
+        '================================================================================'
+    ) -join [Environment]::NewLine
+    $ftr | Out-File $log -Append -Encoding utf8
+    Write-Output $ftr
+    Write-Output "[OK] Udalo sie stworzyc skrot do aplikacji Outlook (PWA) na pulpicie."
+}
+catch {
+    wl "Unhandled error: $_" 'ERROR'
+    $end = Get-Date
+    $dur = $end - $start
+    $ftr = @(
+        ''
+        '================================================================================'
+        'Script Execution Complete'
+        '================================================================================'
+        "End Time       : $($end.ToString('yyyy-MM-dd HH:mm:ss'))"
+        "Duration       : $($dur.ToString())"
+        "Exit Status    : FAILED"
+        '================================================================================'
+    ) -join [Environment]::NewLine
+    $ftr | Out-File $log -Append -Encoding utf8
+    Write-Output $ftr
+    Write-Output "[!] Nie udalo sie stworzyc skrotu do aplikacji Outlook (PWA) na pulpicie. Powod: $_"
+    exit 1
+}
